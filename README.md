@@ -11,7 +11,8 @@ The 20-mer CNN branch will stay intact, but the architecture will become multimo
 Day 11 onwards details will be added later.
 
 # Day-by-Day Progress
-# Day 0 — Environment Setup
+
+## Day 0 — Environment Setup
 
 I installed and verified Anaconda, created a clean project folder structure, and set up a dedicated conda environment named crispr-ai.
 I installed all required packages and verified them via:
@@ -28,12 +29,12 @@ print("Matplotlib:", plt.__version__)
 print("Scikit-learn:", sklearn.__version__)
 ```
 
-# Day 1 — Synthetic CRISPR Dataset Generation
+## Day 1 — Synthetic CRISPR Dataset Generation
 
 I created a synthetic CRISPR guide RNA dataset, assigned each guide a fake efficiency score, and saved it to the data/ folder.
 I plotted the synthetic efficiency distribution using matplotlib.
 
-# Day 2 — One-Hot Encoding DNA
+## Day 2 — One-Hot Encoding DNA
 
 I loaded the Day 1 dataset and defined a one-hot encoding scheme:
 
@@ -62,7 +63,7 @@ X_day2.npy
 y_day2.npy
 ```
 
-# Day 3 — Train/Validation/Test Split
+## Day 3 — Train/Validation/Test Split
 
 I reloaded the encoded data and performed a 60/20/20 split:
 
@@ -84,7 +85,7 @@ print("Test set:", X_test.shape, y_test.shape)
 I saved all split arrays and visualized the ratios.
 
 
-# Day 4 — PyTorch Datasets and DataLoaders
+## Day 4 — PyTorch Datasets and DataLoaders
 
 After installing PyTorch, I converted all arrays into tensors:
 
@@ -114,7 +115,7 @@ test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 Jupyter Notebook plotting broke, so I switched to saving figures for Colab.
 
 
-# Day 5 — Building the CRISPR CNN Architecture
+## Day 5 — Building the CRISPR CNN Architecture
 
 I rebuilt the pipeline and defined the first CNN:
 
@@ -156,7 +157,7 @@ predictions[:5].detach().numpy().flatten(), y_batch[:5].numpy()
 I saved the untrained model.
 
 
-# Day 6 — Training on Synthetic Data
+## Day 6 — Training on Synthetic Data
 
 I configured:
 
@@ -171,7 +172,7 @@ Because the labels were random synthetic noise, the model found no real signal. 
 I saved logs as CSV for Colab plotting.
 
 
-# Day 7 — Final Evaluation on Synthetic Data
+## Day 7 — Final Evaluation on Synthetic Data
 
 I loaded the test tensors, rebuilt the CNN, loaded weights, made predictions, and computed metrics:
 
@@ -183,7 +184,7 @@ r2 = r2_score(y_test, predictions)
 mse, mae, r2
 ```
 
-Results:
+### Results:
 
 ```bash
 MSE = 0.116
@@ -193,19 +194,19 @@ MAE = 0.291
 R² = –0.731
 ```
 
-Interpretation:
+### Interpretation:
 
 Moderate errors (expected with random data)
 
 30% average error magnitude
 
-Negative R² means worse than predicting the mean
-Exactly what happens when the labels contain no signal.
+Negative R² means worse than predicting the mean. Exactly what happens when the labels contain no signal.
 
 
-# Day 8 — Importing Real CRISPR Efficiency Data
+## Day 8 — Importing Real CRISPR Efficiency Data
 
 I downloaded V2_data.xlsx from the Azimuth repository (GitHub).
+
 I used only:
 
 1. Construct Barcode
@@ -251,7 +252,7 @@ X_test_real.npy
 y_test_real.npy
 ```
 
-# Day 9 — Training on Real Data (Debugging NaNs)
+## Day 9 — Training on Real Data (Debugging NaNs)
 
 I loaded all saved tensors and created DataLoaders.
 When training, both train and val loss became NaN.
@@ -339,7 +340,7 @@ MAE = 0.25117
 R² = 0.00579
 ```
 
-Interpretation:
+### Interpretation:
 
 Stable and consistent with validation
 
