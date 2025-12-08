@@ -1,0 +1,5 @@
+
+CRISPR guide Efficiency Predictor - Test Set Evaluation
+Test MSE: 0.116020
+Test MAE: 0.291080
+Test R^2: -0.731019
