@@ -371,23 +371,406 @@ But CRISPR efficiency depends on:
 
 The model simply doesn’t have enough biological information to learn meaningful variance.
 
-# Plans Starting Day 11
+## Day 11 — Data Preprocessing & Feature Engineering
 
-I will expand the model using the following additional real features:
+On Day 11, I preprocessed the data. I loaded the results sheet from the V2_data.xlsx file and performed basic cleaning. I retained only the required columns:
 
-1. Percent peptide
-2. Construct Barcode
-3. Extended Spacer
-4. Gene Symbol
-5. Amino Acid cut position
+```python
+required_cols = [
 
+    "Construct Barcode",
 
-Rules for the new multimodal design:
+    "Extended Spacer(NNNN[20nt]NGGNNN)",
 
-1. The original 20-mer CNN branch stays unchanged.
-2. PAM is encoded explicitly, not merged into the 20-mer.
-3. Gene symbols are learned using an embedding layer.
-4. Cut position enters as a continuous auxiliary feature.
+    "Gene Symbol",
 
+    "Amino Acid Cut position",
 
-This transition will transform the model from pure sequence learning into a biologically informed predictor.
+    "Percent Peptide",
+
+]
+```
+
+I then dropped rows with missing values in these columns:
+
+```python
+df = df.dropna(subset=required_cols).reset_index(drop=True)
+
+print("Shape after dropping NaNs in required cols:", df.shape)
+```
+
+### 20-mer Sequence Encoding
+
+Next, I one-hot encoded the 20-nt guide sequence using the following function:
+
+```python
+BASE2IDX = {"A": 0, "C": 1, "G": 2, "T": 3}
+
+def one_hot_20mer(seq, length=20):
+    """
+    One-hot encode a 20-nt sequence into shape (4, length).
+    Assumes characters are only A/C/G/T (uppercased).
+    """
+    seq = str(seq).upper().strip()
+    if len(seq) != length:
+        raise ValueError(f"Sequence length {len(seq)} != {length} for: {seq}")
+
+    arr = np.zeros((4, length), dtype=np.float32)
+    for i, base in enumerate(seq):
+        idx = BASE2IDX.get(base, None)
+        if idx is None:
+            raise ValueError(f"Invalid base '{base}' in sequence: {seq}")
+        arr[idx, i] = 1.0
+    return arr
+```
+
+This function was applied to all rows.
+
+### PAM Encoding
+
+I extracted PAMs from the extended spacer and encoded them as one-hot vectors:
+
+```python
+unique_pams = sorted(df["PAM"].unique())
+pam2id = {p: i for i, p in enumerate(unique_pams)}
+print("pam2id mapping:", pam2id)
+
+pam_ids = df["PAM"].map(pam2id).values  # shape: (N,)
+
+X_pam = np.zeros((len(df), len(unique_pams)), dtype=np.float32)
+X_pam[np.arange(len(df)), pam_ids] = 1.0
+
+print("X_pam shape:", X_pam.shape)
+```
+
+### Gene Symbol Encoding
+
+Gene symbols were encoded as integer IDs for use in an embedding layer:
+
+```python
+unique_genes = sorted(df["Gene Symbol"].astype(str).unique())
+gene2id = {g: i for i, g in enumerate(unique_genes)}
+print("Number of unique genes:", len(unique_genes))
+
+gene_ids = df["Gene Symbol"].astype(str).map(gene2id).astype(np.int64).values  # shape: (N,)
+print("gene_ids shape:", gene_ids.shape, "min:", gene_ids.min(), "max:", gene_ids.max())
+```
+
+### Cut Position & Target Processing
+
+I kept amino-acid cut position as a numeric scalar:
+
+```python
+cut_raw = df["Amino Acid Cut position"].astype(np.float32).values  # shape: (N,)
+print("Cut position raw stats: min", cut_raw.min(), "max", cut_raw.max())
+```
+
+I extracted and inspected the target variable:
+
+```python
+y_raw = df["Percent Peptide"].astype(np.float32).values  # shape: (N,)
+print("Percent Peptide raw stats: min", y_raw.min(), "max", y_raw.max())
+```
+
+I then created a 60/20/20 train/validation/test split, fit scalers on the training set only, and saved all features, targets, and metadata as .npy and .json files.
+
+## Day 12 — Multi-Input Model Design & Diagnostic Training
+
+On Day 12, I loaded the preprocessed data and defined a multi-input dataset:
+
+```python
+class CRISPRDataset(Dataset):
+
+    def __init__(self, X_seq, X_pam, X_gene, X_cut, y):
+
+        self.X_seq = torch.tensor(X_seq, dtype=torch.float32)
+
+        self.X_pam = torch.tensor(X_pam, dtype=torch.float32)
+
+        self.X_gene = torch.tensor(X_gene, dtype=torch.long)
+
+        self.X_cut = torch.tensor(X_cut, dtype=torch.float32)
+
+        self.y = torch.tensor(y, dtype=torch.float32)
+
+    def __len__(self):
+
+        return len(self.y)
+
+    def __getitem__(self, idx):
+
+        return {
+
+            "seq": self.X_seq[idx],
+
+            "pam": self.X_pam[idx],
+
+            "gene": self.X_gene[idx],
+
+            "cut": self.X_cut[idx],
+
+            "y": self.y[idx]
+
+        }
+```
+
+I designed a context-aware architecture with three branches.
+
+### Sequence CNN Branch
+
+```python
+class SequenceCNN(nn.Module):
+
+    def __init__(self):
+
+        super().__init__()
+
+        self.conv1 = nn.Conv1d(4, 32, kernel_size=3, padding=1)
+
+        self.conv2 = nn.Conv1d(32, 64, kernel_size=3, padding=1)
+
+        self.pool = nn.AdaptiveMaxPool1d(1)
+
+    def forward(self, x):
+
+        x = F.relu(self.conv1(x))
+
+        x = F.relu(self.conv2(x))
+
+        x = self.pool(x).squeeze(-1)
+
+        return x  # (batch, 64)
+```
+
+### Gene Embedding Branch
+
+```python
+class GeneEmbedding(nn.Module):
+
+    def __init__(self, num_genes, embed_dim=6):
+
+        super().__init__()
+
+        self.embed = nn.Embedding(num_genes, embed_dim)
+
+    def forward(self, x):
+
+        return self.embed(x)
+```
+
+### PAM Projection Branch
+
+```python
+class PAMProjector(nn.Module):
+
+    def __init__(self, pam_dim, out_dim=4):
+
+        super().__init__()
+
+        self.fc = nn.Linear(pam_dim, out_dim)
+
+    def forward(self, x):
+
+        return F.relu(self.fc(x))
+```
+
+These branches were fused into a single context-aware but sequence-respecting model.
+
+### Training Protocol
+
+I defined the following training loop:
+
+```python
+def train_one_epoch(model, loader):
+
+    model.train()
+
+    losses = []
+
+    for batch in loader:
+
+        optimizer.zero_grad()
+
+        y_pred = model(
+
+            batch["seq"].to(device),
+
+            batch["pam"].to(device),
+
+            batch["gene"].to(device),
+
+            batch["cut"].to(device)
+
+        )
+
+        loss = criterion(y_pred, batch["y"].to(device))
+
+        loss.backward()
+
+        optimizer.step()
+
+        losses.append(loss.item())
+
+    return np.mean(losses)
+```
+
+And the validation loop:
+
+```python
+def evaluate(model, loader):
+
+    model.eval()
+
+    ys, preds = [], []
+
+    with torch.no_grad():
+
+        for batch in loader:
+
+            y_pred = model(
+
+                batch["seq"].to(device),
+
+                batch["pam"].to(device),
+
+                batch["gene"].to(device),
+
+                batch["cut"].to(device)
+
+            )
+
+            preds.append(y_pred.cpu().numpy())
+
+            ys.append(batch["y"].cpu().numpy())
+
+    return mean_squared_error(
+
+        np.vstack(ys), np.vstack(preds)
+
+    )
+```
+I trained the model briefly and evaluated behavior using:
+
+1. training vs validation loss curves
+2. prediction distribution
+3. true vs predicted plots
+
+This confirmed elimination of mean-collapse. This transition will transform the model from pure sequence learning into a biologically informed predictor.
+
+## Day 13 — Test Evaluation, Interpretation & Ablation
+
+On Day 13, I retrained the model cleanly using the same architecture and then evaluated it on the held-out test set.
+
+Test predictions were generated using:
+
+```python
+model.eval()
+
+y_true_scaled = []
+
+y_pred_scaled = []
+
+with torch.no_grad():
+
+    for batch in test_loader:
+
+        preds = model(
+
+            batch["seq"].to(device),
+
+            batch["pam"].to(device),
+
+            batch["gene"].to(device),
+
+            batch["cut"].to(device)
+
+        )
+
+        y_pred_scaled.append(preds.cpu().numpy())
+
+        y_true_scaled.append(batch["y"].cpu().numpy())
+
+y_true_scaled = np.vstack(y_true_scaled).flatten()
+
+y_pred_scaled = np.vstack(y_pred_scaled).flatten()
+
+Test-Set Performance (Scaled)
+
+MSE: 0.0142
+
+MAE: 0.0836
+
+R²: 0.8332
+```
+
+This represents a ~5–6× error reduction over the sequence-only model (R² ≈ 0.006).
+
+### Ablation Analysis
+
+I created a reusable evaluation helper:
+
+```python
+def evaluate_on_arrays(model, X_seq, X_pam, X_gene, X_cut, y_scaled):
+
+    """Evaluate model on given arrays (scaled y). Returns metrics + predictions."""
+
+    loader = DataLoader(
+
+        CRISPRDataset(X_seq, X_pam, X_gene, X_cut, y_scaled),
+
+        batch_size=128,
+
+        shuffle=False
+
+    )
+
+    model.eval()
+
+    y_true_list, y_pred_list = [], []
+
+    with torch.no_grad():
+
+        for batch in loader:
+
+            preds = model(
+
+                batch["seq"].to(device),
+
+                batch["pam"].to(device),
+
+                batch["gene"].to(device),
+
+                batch["cut"].to(device)
+
+            )
+
+            y_pred_list.append(preds.cpu().numpy())
+
+            y_true_list.append(batch["y"].cpu().numpy())
+
+    y_true = np.vstack(y_true_list).flatten()
+
+    y_pred = np.vstack(y_pred_list).flatten()
+
+    mse = mean_squared_error(y_true, y_pred)
+
+    mae = mean_absolute_error(y_true, y_pred)
+
+    r2  = r2_score(y_true, y_pred)
+
+    return mse, mae, r2, y_true, y_pred
+```
+
+### Results Summary
+
+Gene-shuffled: R² = −0.1258 → catastrophic failure
+
+PAM-neutralized: R² = 0.8299 → minimal effect
+
+Cut-neutralized: R² = −0.5077 → catastrophic failure
+
+These results confirm that gene identity and cut position are foundational, while PAM acts as a secondary refinement signal.
+
+# Final Outcome
+
+This project demonstrates that sequence alone is insufficient for predicting CRISPR guide efficiency. Incorporating biological context transforms the model from a mean-collapsing regressor into a high-performing, explainable system. The final model was frozen and saved after test-set evaluation and ablation analysis.
